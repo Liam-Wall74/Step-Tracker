@@ -309,10 +309,10 @@ void loop() {
          // wait 1 second
       }
       // enter reset state
-      resetState = true ;
+       = true ;
     }
     
-    if (resetState) {
+    if () {
       // reset step count
       stepCount = 0 ;
       // display on LCD step count reset
@@ -321,6 +321,12 @@ void loop() {
       lcd.print("Step count reset");
       lcd.setCursor(0,1) ;
       lcd.print("A: set step goal") ;
+      // reset pace identification counts
+      walkingStepCount = 0;
+      runningStepCount = 0;
+      previousStepTime = 0;
+      currentPace = STATIONARY;
+      updatePaceLEDs();
     }
     
     while (resetState) {
@@ -470,6 +476,22 @@ float getAcceleration() {
 void updateWalkingPace(unsigned long currentStepTime, float stepMagnitude) {
   float stepFrequency = 0.0;
 
+  if (previousStepTime == 0) {
+    if (stepMagnitude >= RUN_MAG_MIN) {
+      currentPace = RUNNING;
+      runningStepCount++;
+    }
+    else {
+      currentPace = WALKING;
+      walkingStepCount++;
+    }
+  
+    previousStepTime = currentStepTime;
+    updatePaceLEDs();
+    updatePaceLCD();
+    return;
+  }
+
   if (previousStepTime > 0) {
     float stepInterval = (currentStepTime - previousStepTime) / 1000.0;
     stepFrequency = 1.0 / stepInterval;
@@ -491,7 +513,7 @@ void updateWalkingPace(unsigned long currentStepTime, float stepMagnitude) {
 }
 
 void checkStationary() {
-  if (millis() - stepTime > STATIONARY_TIMEOUT) {
+  if (millis() - stepTime > STATIONARY_TIMEOUT && currentPace != STATIONARY) {
     currentPace = STATIONARY;
     updatePaceLEDs();
     updatePaceLCD();
