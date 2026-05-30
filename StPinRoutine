@@ -1,0 +1,93 @@
+const int X_PIN  = A0;
+const int Y_PIN  = A1;
+const int Z_PIN  = A2;
+const int ST_PIN = 2;
+
+const float ADC_REF_VOLTAGE = 5.00;
+const int   ADC_RESOLUTION  = 1024;
+const float MV_PER_COUNT    = (ADC_REF_VOLTAGE / ADC_RESOLUTION) * 1000.0;
+const float SENSITIVITY     = 330.0;
+const float ST_SCALE        = (3.3/3.0) * (3.3/3.0) * (3.3/3.0);
+const float X_EXPECTED      = -325.0 * ST_SCALE;
+const float Y_EXPECTED      = +325.0 * ST_SCALE;
+const float Z_EXPECTED      = +550.0 * ST_SCALE;
+const float TOLERANCE       = 0.30;
+const int   NUM_SAMPLES     = 100;
+
+float readMV(int pin) {
+  long sum = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    analogRead(pin);           // dummy read to settle MUX
+    delayMicroseconds(200);
+    sum += analogRead(pin);
+    delay(3);
+  }
+  return ((float)sum / NUM_SAMPLES) * MV_PER_COUNT;
+}
+
+bool check(float delta, float expected, const char* axis) {
+  float lo = expected < 0 ? expected * (1 + TOLERANCE) : expected * (1 - TOLERANCE);
+  float hi = expected < 0 ? expected * (1 - TOLERANCE) : expected * (1 + TOLERANCE);
+  bool pass = (delta >= lo && delta <= hi);
+  Serial.print(axis);
+  Serial.print(": delta="); Serial.print(delta, 1);
+  Serial.print("mV expected="); Serial.print(expected, 1);
+  Serial.println(pass ? "mV PASS" : "mV FAIL");
+  return pass;
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(ST_PIN, OUTPUT);
+  digitalWrite(ST_PIN, HIGH);  // HIGH = self-test OFF (active-low circuit)
+  Serial.println("ADXL335 Self-Test");
+}
+
+void loop() {
+  // Step 1 — ST OFF (D2 HIGH), read baseline
+  digitalWrite(ST_PIN, HIGH);  // self-test OFF
+  delay(200);
+  float xb = readMV(X_PIN);
+  float yb = readMV(Y_PIN);
+  float zb = readMV(Z_PIN);
+
+  Serial.println("Baseline (ST OFF):");
+  Serial.print("X="); Serial.print(xb,1);
+  Serial.print("mV Y="); Serial.print(yb,1);
+  Serial.print("mV Z="); Serial.print(zb,1); Serial.println("mV");
+
+  // Step 2 — ST ON (D2 LOW), read self-test values
+  digitalWrite(ST_PIN, LOW);   // self-test ON (active-low)
+  delay(200);
+  float xs = readMV(X_PIN);
+  float ys = readMV(Y_PIN);
+  float zs = readMV(Z_PIN);
+
+  Serial.println("Self-test (ST ON):");
+  Serial.print("X="); Serial.print(xs,1);
+  Serial.print("mV Y="); Serial.print(ys,1);
+  Serial.print("mV Z="); Serial.print(zs,1); Serial.println("mV");
+
+  // Step 3 — Calculate deltas (new - old)
+  float xd = xs - xb;
+  float yd = ys - yb;
+  float zd = zs - zb;
+
+  Serial.println("Deltas:");
+  Serial.print("X="); Serial.print(xd,1);
+  Serial.print("mV Y="); Serial.print(yd,1);
+  Serial.print("mV Z="); Serial.print(zd,1); Serial.println("mV");
+
+  // Step 4 — Validate
+  bool xp = check(xd, X_EXPECTED, "X");
+  bool yp = check(yd, Y_EXPECTED, "Y");
+  bool zp = check(zd, Z_EXPECTED, "Z");
+
+  // Step 5 — Result
+  Serial.println(xp && yp && zp ? "OVERALL: PASS" : "OVERALL: FAIL");
+  Serial.println("---");
+
+  // Turn self-test back off
+  digitalWrite(ST_PIN, HIGH);  // self-test OFF
+  delay(5000);
+}
