@@ -105,6 +105,28 @@ unsigned long stepTime = 0 ;
 
 // motivation function
 
+///////////////////////////////////////////////////////////////////////////
+//MALINDU'S WALKING PACE IDENTIFICATION ROUTINE INITIALISATION
+//////////////////////////////////////////////////////////////////////////
+
+enum PaceState {
+  STATIONARY,
+  WALKING,
+  RUNNING
+};
+
+PaceState currentPace = STATIONARY;
+
+unsigned long previousStepTime = 0;
+
+int walkingStepCount = 0;
+int runningStepCount = 0;
+
+const unsigned long STATIONARY_TIMEOUT = 2000; // ms
+const float WALK_FREQ_MIN = 0.5;   // steps/sec
+const float RUN_FREQ_MIN = 2.2;    // steps/sec
+const float RUN_MAG_MIN = 1.0;     // tune experimentally
+
 ///////////////////////////////////////////////////////////////////////
 //FINISHED INITIALISATION
 //////////////////////////////////////////////////////////////////////
@@ -232,12 +254,20 @@ void loop() {
     if (peak - valley > 0.5) {
       // add cooldown period since last step
       if (millis() - stepTime > 300) {
-        stepCount += 1 ;
-        peak = 0 ;
-        valley = 0 ;
-        stepTime = millis() ;
+        // Walking pace identification part included
+        unsigned long currentStepTime = millis();
+        float stepMagnitude = peak - valley;
+        stepCount += 1;      
+        updateWalkingPace(currentStepTime, stepMagnitude);      
+        peak = 0;
+        valley = 0;
+        stepTime = currentStepTime;
       }
     }
+
+    // checks if pace is stationary
+    checkStationary();
+    
     // print step count to lcd
     lcd.setCursor(0,0) ;
     lcd.print(stepCount) ;
@@ -433,6 +463,76 @@ float getAcceleration() {
   return magnitude ;
 }
 
+//////////////////////////////////////////////////////////////////////
+//MALINDU'S WALKING PACE IDENTIFICATION FUNCTIONS
+/////////////////////////////////////////////////////////////////////
+
+void updateWalkingPace(unsigned long currentStepTime, float stepMagnitude) {
+  float stepFrequency = 0.0;
+
+  if (previousStepTime > 0) {
+    float stepInterval = (currentStepTime - previousStepTime) / 1000.0;
+    stepFrequency = 1.0 / stepInterval;
+  }
+
+  if (stepFrequency >= RUN_FREQ_MIN || stepMagnitude >= RUN_MAG_MIN) {
+    currentPace = RUNNING;
+    runningStepCount++;
+  }
+  else if (stepFrequency >= WALK_FREQ_MIN) {
+    currentPace = WALKING;
+    walkingStepCount++;
+  }
+
+  previousStepTime = currentStepTime;
+
+  updatePaceLEDs();
+  updatePaceLCD();
+}
+
+void checkStationary() {
+  if (millis() - stepTime > STATIONARY_TIMEOUT) {
+    currentPace = STATIONARY;
+    updatePaceLEDs();
+    updatePaceLCD();
+  }
+}
+
+void updatePaceLEDs() {
+  digitalWrite(RED_LED, currentPace == STATIONARY);
+  digitalWrite(YELLOW_LED, currentPace == WALKING);
+  digitalWrite(GREEN_LED, currentPace == RUNNING);
+}
+
+void updatePaceLCD() {
+  lcd.setCursor(0, 0);
+
+  if (currentPace == STATIONARY) {
+    lcd.print("Pace: Stationary");
+  }
+  else if (currentPace == WALKING) {
+    lcd.print("Pace: Walking   ");
+  }
+  else if (currentPace == RUNNING) {
+    lcd.print("Pace: Running   ");
+  }
+
+  lcd.setCursor(0, 1);
+
+  if (currentPace == WALKING) {
+    lcd.print("Walk Steps:");
+    lcd.print(walkingStepCount);
+    lcd.print("   ");
+  }
+  else if (currentPace == RUNNING) {
+    lcd.print("Run Steps:");
+    lcd.print(runningStepCount);
+    lcd.print("    ");
+  }
+  else {
+    lcd.print("No movement     ");
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////
 //LIAMS CALIBRATION FUNCTIONS
