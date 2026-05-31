@@ -1,119 +1,244 @@
 #include <Wire.h>
+ 
 #include <LiquidCrystal_I2C.h>
-
+ 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-const int X_PIN = A0;
-const int Y_PIN = A1;
-const int Z_PIN = A2;
+ 
+const int X_PIN  = A0;
+ 
+const int Y_PIN  = A1;
+ 
+const int Z_PIN  = A2;
+ 
 const int ST_PIN = 2;
-
-const byte GREEN_LED = 3;
+ 
+const byte GREEN_LED  = 3;
+ 
 const byte YELLOW_LED = 5;
-const byte RED_LED = 6;
-
+ 
+const byte RED_LED    = 6;
+ 
 const int NUM_SAMPLES = 100;
-
-// LCD helper
+ 
+// ── LCD helper ─────────────────────────────
+ 
 void lcdShow(const char* l1, const char* l2) {
+ 
   lcd.clear();
-  lcd.setCursor(0,0); lcd.print(l1);
-  lcd.setCursor(0,1); lcd.print(l2);
+ 
+  lcd.setCursor(0,0);
+ 
+  lcd.print(l1);
+ 
+  lcd.setCursor(0,1);
+ 
+  lcd.print(l2);
+ 
 }
-
-// ADC average
+ 
+// ── Read raw ADC average ───────────────────
+ 
 int readADC(int pin) {
+ 
   long sum = 0;
+ 
   for (int i = 0; i < NUM_SAMPLES; i++) {
+ 
     sum += analogRead(pin);
+ 
     delay(2);
+ 
   }
+ 
   return sum / NUM_SAMPLES;
+ 
 }
-
+ 
+// ── Setup ──────────────────────────────────
+ 
 void setup() {
+ 
   pinMode(ST_PIN, OUTPUT);
+ 
   digitalWrite(ST_PIN, HIGH);
-
+ 
   pinMode(GREEN_LED, OUTPUT);
+ 
   pinMode(YELLOW_LED, OUTPUT);
+ 
   pinMode(RED_LED, OUTPUT);
-
+ 
   lcd.init();
+ 
   lcd.backlight();
+ 
   lcdShow("ADXL335 TEST", "Starting...");
+ 
   delay(1500);
+ 
 }
-
+ 
+// ── Main loop ──────────────────────────────
+ 
 void loop() {
-
+ 
   digitalWrite(YELLOW_LED, HIGH);
-
-  // Baseline
+ 
+  // ── Baseline ──
+ 
   lcdShow("Reading", "Baseline");
-
+ 
   int xb = readADC(X_PIN);
+ 
   int yb = readADC(Y_PIN);
+ 
   int zb = readADC(Z_PIN);
-
+ 
+  lcdShow("BASE ADC", "X Y Z");
+ 
+  delay(3000);
+ 
+  lcd.clear();
+ 
+  lcd.setCursor(0,0);
+ 
+  lcd.print("X:");
+ 
+  lcd.print(xb);
+ 
+  lcd.print(" Y:");
+ 
+  lcd.print(yb);
+ 
+  lcd.setCursor(0,1);
+ 
+  lcd.print("Z:");
+ 
+  lcd.print(zb);
+ 
+  delay(3000);
+ 
+  // ── Saturation check ──
+ 
   bool saturated = (xb > 980 || yb > 980 || zb > 980);
-  if (saturated) {
-    lcdShow("ERROR", "SATURATED");
-    delay(2000);
-    return;
-  }
-
-  // Self-test
+ 
+  // ── Self-test ON ──
+ 
   digitalWrite(ST_PIN, LOW);
+ 
   lcdShow("SELF TEST", "Running...");
-  delay(300);
-
+ 
+  delay(500);
+ 
   int xs = readADC(X_PIN);
+ 
   int ys = readADC(Y_PIN);
+ 
   int zs = readADC(Z_PIN);
-
+ 
+  // ── Deltas ──
+ 
   int xd = xs - xb;
+ 
   int yd = ys - yb;
+ 
   int zd = zs - zb;
-
+ 
   int headroomX = 1023 - xb;
   int headroomY = 1023 - yb;
   int headroomZ = 1023 - zb;
-
+ 
   if (headroomX < 50) headroomX = 50;
   if (headroomY < 50) headroomY = 50;
   if (headroomZ < 50) headroomZ = 50;
-
+  
   float nx = (float)xd / headroomX;
   float ny = (float)yd / headroomY;
   float nz = (float)zd / headroomZ;
-
+ 
+  lcdShow("DELTA X Y", "Z");
+ 
+  delay(4000);
+ 
+  lcd.clear();
+ 
+  lcd.setCursor(0,0);
+ 
+  lcd.print("X:");
+ 
+  lcd.print(xd);
+ 
+  lcd.print(" Y:");
+ 
+  lcd.print(yd);
+ 
+  lcd.setCursor(0,1);
+ 
+  lcd.print("Z:");
+ 
+  lcd.print(zd);
+ 
+  delay(1500);
+ 
+  // ── Axis validation ──
+ 
   bool xp = abs(nx) > 0.05;
   bool yp = abs(ny) > 0.05;
   bool zp = abs(nz) > 0.05;
 
-  // Per-axis results
+ 
+    delay(2000);
+   
   lcd.clear();
-  lcd.setCursor(0,0); lcd.print("X:"); lcd.print(xp ? "PASS" : "FAIL");
-  lcd.print(" Y:"); lcd.print(yp ? "PASS" : "FAIL");
-
+  lcd.setCursor(0,0);
+  lcd.print("Axis X ");
+  lcd.print(xp ? "PASS" : "FAIL");
+  
   lcd.setCursor(0,1);
-  lcd.print("Z:"); lcd.print(zp ? "PASS" : "FAIL");
-  delay(3000);
-
-  // Final result
+  lcd.print("d=");
+  lcd.print(xd);
+  lcd.print(" ex=0");
+  delay(1500);
+  
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Axis Y ");
+  lcd.print(yp ? "PASS" : "FAIL");
+  
+  lcd.setCursor(0,1);
+  lcd.print("d=");
+  lcd.print(yd);
+  lcd.print(" ex=0");
+  delay(1500);
+  
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Axis Z ");
+  lcd.print(zp ? "PASS" : "FAIL");
+  
+  lcd.setCursor(0,1);
+  lcd.print("d=");
+  lcd.print(zd);
+  lcd.print(" ex=0");
+  delay(1500);
+  
+  // FINAL LED + OVERALL RESULT
   digitalWrite(YELLOW_LED, LOW);
-  digitalWrite(ST_PIN, HIGH);
-
+  
   if (xp && yp && zp) {
     digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
     lcdShow("SELF TEST", "PASS");
   } else {
     digitalWrite(RED_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
     lcdShow("SELF TEST", "FAIL");
   }
-
-  delay(4000);
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, LOW);
-}
+   
+    delay(4000);
+   
+    digitalWrite(GREEN_LED, LOW);
+   
+    digitalWrite(RED_LED, LOW);
+   
+  }
