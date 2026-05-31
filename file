@@ -119,8 +119,8 @@ PaceState currentPace = STATIONARY;
 
 unsigned long previousStepTime = 0;
 
-int walkingStepCount = 0;
-int runningStepCount = 0;
+// int walkingStepCount = 0;
+// int runningStepCount = 0;
 
 const unsigned long STATIONARY_TIMEOUT = 2000; // ms
 const float WALK_FREQ_MIN = 0.5;   // steps/sec
@@ -527,32 +527,20 @@ void updatePaceLEDs() {
 }
 
 void updatePaceLCD() {
-  lcd.setCursor(0, 0);
+  // Clear only the right side of top row
+  lcd.setCursor(11, 0);
+  lcd.print("     ");
+
+  lcd.setCursor(11, 0);
 
   if (currentPace == STATIONARY) {
-    lcd.print("Pace: Stationary");
+    lcd.print("Still");
   }
   else if (currentPace == WALKING) {
-    lcd.print("Pace: Walking   ");
+    lcd.print("Walk ");
   }
   else if (currentPace == RUNNING) {
-    lcd.print("Pace: Running   ");
-  }
-
-  lcd.setCursor(0, 1);
-
-  if (currentPace == WALKING) {
-    lcd.print("Walk Steps:");
-    lcd.print(walkingStepCount);
-    lcd.print("   ");
-  }
-  else if (currentPace == RUNNING) {
-    lcd.print("Run Steps:");
-    lcd.print(runningStepCount);
-    lcd.print("    ");
-  }
-  else {
-    lcd.print("No movement     ");
+    lcd.print("Run  ");
   }
 }
 
