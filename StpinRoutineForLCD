@@ -12,192 +12,140 @@ const byte GREEN_LED  = 3;
 const byte YELLOW_LED = 5;
 const byte RED_LED    = 6;
 
-const float ADC_REF_VOLTAGE = 5.00;
-const int   ADC_RESOLUTION  = 1024;
-const float MV_PER_COUNT    = (ADC_REF_VOLTAGE / ADC_RESOLUTION) * 1000.0;
-const float ST_SCALE        = (3.3/3.0) * (3.3/3.0) * (3.3/3.0);
-const float X_EXPECTED      = -325.0 * ST_SCALE;
-const float Y_EXPECTED      = +325.0 * ST_SCALE;
-const float Z_EXPECTED      = +550.0 * ST_SCALE;
-const float TOLERANCE       = 0.30;
-const int   NUM_SAMPLES     = 100;
+const int NUM_SAMPLES = 100;
 
-// ── Helper: clear one LCD row ─────────────────────────────────
-void clearRow(byte row) {
-  lcd.setCursor(0, row);
-  lcd.print(F("                "));
-}
-
-// ── Helper: display two lines on LCD ─────────────────────────
-void lcdShow(const char* line0, const char* line1) {
+// ── LCD helper ─────────────────────────────
+void lcdShow(const char* l1, const char* l2) {
   lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(line0);
-  lcd.setCursor(0, 1);
-  lcd.print(line1);
+  lcd.setCursor(0,0);
+  lcd.print(l1);
+  lcd.setCursor(0,1);
+  lcd.print(l2);
 }
 
-// ── Read averaged ADC in mV ───────────────────────────────────
-float readMV(int pin) {
+// ── Read raw ADC average ───────────────────
+int readADC(int pin) {
   long sum = 0;
   for (int i = 0; i < NUM_SAMPLES; i++) {
-    analogRead(pin);
-    delayMicroseconds(200);
     sum += analogRead(pin);
-    delay(3);
+    delay(2);
   }
-  return ((float)sum / NUM_SAMPLES) * MV_PER_COUNT;
+  return sum / NUM_SAMPLES;
 }
 
-// ── Check delta against expected, show result on LCD ─────────
-bool checkAndDisplay(float delta, float expected, const char* axis) {
-  float lo = expected < 0 ? expected * (1 + TOLERANCE) : expected * (1 - TOLERANCE);
-  float hi = expected < 0 ? expected * (1 - TOLERANCE) : expected * (1 + TOLERANCE);
-  bool pass = (delta >= lo && delta <= hi);
-
-  // Line 0: axis and result
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Axis "));
-  lcd.print(axis);
-  lcd.print(pass ? F(" PASS") : F(" FAIL"));
-
-  // Line 1: measured delta
-  lcd.setCursor(0, 1);
-  lcd.print(F("d="));
-  lcd.print(delta, 0);
-  lcd.print(F("mV ex="));
-  lcd.print(expected, 0);
-
-  delay(2000);
-  return pass;
-}
-
-// ── Setup ─────────────────────────────────────────────────────
+// ── Setup ──────────────────────────────────
 void setup() {
   pinMode(ST_PIN, OUTPUT);
-  digitalWrite(ST_PIN, HIGH);   // self-test OFF
+  digitalWrite(ST_PIN, HIGH);
 
-  pinMode(GREEN_LED,  OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
   pinMode(YELLOW_LED, OUTPUT);
-  pinMode(RED_LED,    OUTPUT);
-
-  digitalWrite(GREEN_LED,  LOW);
-  digitalWrite(YELLOW_LED, LOW);
-  digitalWrite(RED_LED,    LOW);
+  pinMode(RED_LED, OUTPUT);
 
   lcd.init();
   lcd.backlight();
 
-  lcdShow("ADXL335", "Self-Test Ready");
-  delay(2000);
+  lcdShow("ADXL335 TEST", "Starting...");
+  delay(1500);
 }
 
-// ── Main loop ─────────────────────────────────────────────────
+// ── Main loop ──────────────────────────────
 void loop() {
 
-  // ── Step 1 — Read baseline (ST OFF) ──────────────────────
-  digitalWrite(ST_PIN, HIGH);   // self-test OFF
   digitalWrite(YELLOW_LED, HIGH);
 
-  lcdShow("Reading", "Baseline...");
-  delay(200);
+  // ── Baseline ──
+  lcdShow("Reading", "Baseline");
 
-  float xb = readMV(X_PIN);
-  float yb = readMV(Y_PIN);
-  float zb = readMV(Z_PIN);
+  int xb = readADC(X_PIN);
+  int yb = readADC(Y_PIN);
+  int zb = readADC(Z_PIN);
 
-  // Show baseline on LCD
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Base X="));
-  lcd.print(xb, 0);
-  lcd.print(F("mV"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("Y="));
-  lcd.print(yb, 0);
-  lcd.print(F(" Z="));
-  lcd.print(zb, 0);
-  delay(2000);
-
-  // ── Step 2 — Apply self-test (ST ON) ─────────────────────
-  digitalWrite(ST_PIN, LOW);    // self-test ON (active-low)
-
-  lcdShow("Applying", "Self-Test...");
-  delay(200);
-
-  float xs = readMV(X_PIN);
-  float ys = readMV(Y_PIN);
-  float zs = readMV(Z_PIN);
-
-  // Show self-test readings on LCD
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("ST   X="));
-  lcd.print(xs, 0);
-  lcd.print(F("mV"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("Y="));
-  lcd.print(ys, 0);
-  lcd.print(F(" Z="));
-  lcd.print(zs, 0);
-  delay(2000);
-
-  // ── Step 3 — Calculate deltas ─────────────────────────────
-  float xd = xs - xb;
-  float yd = ys - yb;
-  float zd = zs - zb;
-
-  // Show deltas on LCD
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Deltas (mV)"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("X="));
-  lcd.print(xd, 0);
-  lcd.print(F(" Y="));
-  lcd.print(yd, 0);
-  lcd.print(F(" Z="));
-  lcd.print(zd, 0);
-  delay(2000);
-
-  // ── Step 4 — Validate each axis ──────────────────────────
-  lcdShow("Validating", "Axes...");
+  lcdShow("BASE ADC", "X Y Z");
   delay(1000);
 
-  bool xp = checkAndDisplay(xd, X_EXPECTED, "X");
-  bool yp = checkAndDisplay(yd, Y_EXPECTED, "Y");
-  bool zp = checkAndDisplay(zd, Z_EXPECTED, "Z");
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("X:");
+  lcd.print(xb);
+  lcd.print(" Y:");
+  lcd.print(yb);
 
-  // ── Step 5 — Overall result ───────────────────────────────
+  lcd.setCursor(0,1);
+  lcd.print("Z:");
+  lcd.print(zb);
+  delay(1500);
+
+  // ── Saturation check ──
+  bool saturated = (xb > 980 || yb > 980 || zb > 980);
+
+  if (saturated) {
+    lcdShow("ERROR", "SATURATED ADC");
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(YELLOW_LED, LOW);
+    delay(3000);
+    return;
+  }
+
+  // ── Self-test ON ──
+  digitalWrite(ST_PIN, LOW);
+  lcdShow("SELF TEST", "Running...");
+  delay(300);
+
+  int xs = readADC(X_PIN);
+  int ys = readADC(Y_PIN);
+  int zs = readADC(Z_PIN);
+
+  // ── Deltas ──
+  int xd = xs - xb;
+  int yd = ys - yb;
+  int zd = zs - zb;
+
+  lcdShow("DELTA X Y", "Z next");
+  delay(800);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("X:");
+  lcd.print(xd);
+  lcd.print(" Y:");
+  lcd.print(yd);
+
+  lcd.setCursor(0,1);
+  lcd.print("Z:");
+  lcd.print(zd);
+  delay(1500);
+
+  // ── Axis validation ──
+  bool xp = (abs(xd) > 200 && abs(xd) < 1200);
+  bool yp = (abs(yd) > 200 && abs(yd) < 1200);
+  bool zp = (abs(zd) > 200 && abs(zd) < 1200);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("X");
+  lcd.print(xp ? "P " : "F ");
+  lcd.print("Y");
+  lcd.print(yp ? "P " : "F ");
+  lcd.print("Z");
+  lcd.print(zp ? "P" : "F");
+
+  delay(2000);
+
+  // ── Result ──
   digitalWrite(YELLOW_LED, LOW);
-  digitalWrite(ST_PIN, HIGH);   // self-test OFF
+  digitalWrite(ST_PIN, HIGH);
 
   if (xp && yp && zp) {
     digitalWrite(GREEN_LED, HIGH);
-    digitalWrite(RED_LED,   LOW);
-
-    lcdShow("SELF-TEST", "PASS :)");
-
+    lcdShow("SELF TEST", "PASS");
   } else {
-    digitalWrite(RED_LED,   HIGH);
-    digitalWrite(GREEN_LED, LOW);
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(F("SELF-TEST FAIL"));
-    lcd.setCursor(0, 1);
-
-    // Show which axes failed
-    if (!xp) lcd.print(F("X "));
-    if (!yp) lcd.print(F("Y "));
-    if (!zp) lcd.print(F("Z "));
-    lcd.print(F("failed"));
+    digitalWrite(RED_LED, HIGH);
+    lcdShow("SELF TEST", "FAIL");
   }
 
-  // Hold result on screen for 5 seconds then repeat
-  delay(5000);
+  delay(4000);
 
   digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED,   LOW);
+  digitalWrite(RED_LED, LOW);
 }
