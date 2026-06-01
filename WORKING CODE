@@ -358,6 +358,11 @@ void loop() {
       calibrationState = false ;
       calibrationHappening = false ;
       lcd.clear() ;
+
+      // Display Still when step counting starts
+      currentPace = STATIONARY;
+      updatePaceLEDs();
+      updatePaceLCD();
       break ;
     }
 
@@ -509,6 +514,7 @@ void loop() {
       previousStepTime = 0;
       currentPace = STATIONARY;
       updatePaceLEDs();
+      updatePaceLCD();
     }
     
     while (resetState) {
@@ -674,7 +680,7 @@ void updateWalkingPace(unsigned long currentStepTime, float stepMagnitude) {
     stepFrequency = 1.0 / stepInterval;
   }
 
-  if (stepFrequency >= RUN_FREQ_MIN || stepMagnitude >= RUN_MAG_MIN) {
+  if (stepFrequency >= RUN_FREQ_MIN && stepMagnitude >= RUN_MAG_MIN) {
     currentPace = RUNNING;
     //runningStepCount++;
   }
