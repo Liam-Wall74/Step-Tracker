@@ -122,21 +122,21 @@ void loop() {
   lcd.setCursor(0,0);
   lcd.print("Axis X "); lcd.print(xp ? "PASS" : "FAIL");
   lcd.setCursor(0,1);
-  lcd.print("d="); lcd.print(xd); lcd.print(" ex=0");
+  lcd.print("d="); lcd.print(xd);
   delay(1500);
 
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print("Axis Y "); lcd.print(yp ? "PASS" : "FAIL");
   lcd.setCursor(0,1);
-  lcd.print("d="); lcd.print(yd); lcd.print(" ex=0");
+  lcd.print("d="); lcd.print(yd); 
   delay(1500);
 
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print("Axis Z "); lcd.print(zp ? "PASS" : "FAIL");
   lcd.setCursor(0,1);
-  lcd.print("d="); lcd.print(zd); lcd.print(" ex=0");
+  lcd.print("d="); lcd.print(zd);
   delay(1500);
 
   // FINAL LED + OVERALL RESULT
