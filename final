@@ -1,0 +1,1561 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <EEPROM.h>
+#include <math.h>
+
+// initialise lcd and buttons
+// lcd
+LiquidCrystal_I2C lcd(0x27,16,2) ;
+// button A
+int buttonA = 8 ; // next_button for calibration routine
+// button B
+int buttonB = 7 ; // start button for calibration routine
+// state switching
+// state 1
+bool stState = true ;
+bool stHappening = false ;
+// state 2
+bool calibrationState = false ;
+bool calibrationHappening = false ;
+//state 4
+bool stepCountingState = false ;
+bool hikingState = false ;
+
+/////////////////////////////////////////////////////////////////////////
+//LIAMS CALIBRATION ROUTINE INITIALISATION
+////////////////////////////////////////////////////////////////////////
+
+// Custom upward arrow character for the LCD
+
+byte upArrow[8] = {
+  B00100,
+  B01110,
+  B10101,
+  B00100,
+  B00100,
+  B00100,
+  B00100,
+  B00000
+};
+
+// PCB pin connections
+
+// Filtered accelerometer outputs
+const byte X_PIN = A0;        // FILT_OUT1
+const byte Y_PIN = A1;        // FILT_OUT2
+const byte Z_PIN = A2;        // FILT_OUT3
+// ADXL335 self-test control
+const byte ST_CTRL_PIN = 2;
+// Indicator LEDs
+const byte GREEN_LED  = 3;
+const byte YELLOW_LED = 5;
+const byte RED_LED    = 6;
+
+// Calibration settings
+
+const float ADC_REF_VOLTAGE = 5.00 ;                       // liam had it 5.00 but rory needs it 3.3, use another variable for him
+// Number of samples used during calibration
+const int CAL_SAMPLES = 250;
+// Number of samples used for the live LCD display
+const int LIVE_SAMPLES = 40;
+// Time allowed for the box to settle after pressing B1
+const unsigned long SETTLE_TIME_MS = 2000;
+// Reject readings too close to the Arduino ADC limits
+const float ADC_LOW_LIMIT  = 10.0;
+const float ADC_HIGH_LIMIT = 1010.0;
+
+// EEPROM storage
+const int EEPROM_ADDR = 0;
+const uint16_t CAL_MAGIC = 0xA335;
+struct CalibrationData {
+  uint16_t magic;
+  float offset[3];   // X, Y, Z zero-g centre values
+  float scale[3];    // X, Y, Z ADC counts per g
+};
+CalibrationData cal;
+const byte axisPins[3] = {X_PIN, Y_PIN, Z_PIN};
+
+///////////////////////////////////////////////////////////////////////////
+//RORY'S ST PIN ROUTINE INITIALISATION + FUNCTIONS
+///////////////////////////////////////////////////////////////////////////
+//const int   ADC_RESOLUTION  = 1024;
+//const float MV_PER_COUNT    = (ADC_REF_VOLTAGE / ADC_RESOLUTION) * 1000.0;
+//const float ST_SCALE        = (3.3/3.0) * (3.3/3.0) * (3.3/3.0);
+//const float X_EXPECTED      = -325.0 * ST_SCALE;
+//const float Y_EXPECTED      = +325.0 * ST_SCALE;
+//const float Z_EXPECTED      = +550.0 * ST_SCALE;
+//const float TOLERANCE       = 0.40;
+const int   NUM_SAMPLES     = 100;
+
+bool stSuccess ;
+
+/*// ── Helper: clear one LCD row ─────────────────────────────────
+void clearRow(byte row) {
+  lcd.setCursor(0, row);
+  lcd.print(F("                "));
+}
+
+// ── Helper: display two lines on LCD ─────────────────────────
+void lcdShow(const char* line0, const char* line1) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(line0);
+  lcd.setCursor(0, 1);
+  lcd.print(line1);
+}
+
+
+// ── Read averaged ADC in mV ───────────────────────────────────
+float readMV(int pin) {
+  long sum = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    analogRead(pin);
+    delayMicroseconds(200);
+    sum += analogRead(pin);
+    delay(3);
+  }
+  return ((float)sum / NUM_SAMPLES) * MV_PER_COUNT;
+}
+
+// ── Check delta against expected, show result on LCD ─────────
+bool checkAndDisplay(float delta, float expected, const char* axis) {
+  float lo = expected < 0 ? expected * (1 + TOLERANCE) : expected * (1 - TOLERANCE);
+  float hi = expected < 0 ? expected * (1 - TOLERANCE) : expected * (1 + TOLERANCE);
+  bool pass = (delta >= lo && delta <= hi);
+
+  // Line 0: axis and result
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("Axis "));
+  lcd.print(axis);
+  lcd.print(pass ? F(" PASS") : F(" FAIL"));
+
+  // Line 1: measured delta
+  lcd.setCursor(0, 1);
+  lcd.print(F("d="));
+  lcd.print(delta, 0);
+  lcd.print(F("mV ex="));
+  lcd.print(expected, 0);
+
+  delay(2000);
+  return pass;
+}*/
+
+// ── LCD helper ─────────────────────────────
+void lcdShow(const char* l1, const char* l2) {
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print(l1);
+  lcd.setCursor(0,1);
+  lcd.print(l2);
+}
+
+// ── Read raw ADC average ───────────────────
+int readADC(int pin) {
+  long sum = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    sum += analogRead(pin);
+    delay(2);
+  }
+  return sum / NUM_SAMPLES;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//AMY'S STEP TRACKING ROUTINE + INNOVATIVE FUNCTIONS INITIALISATION
+//////////////////////////////////////////////////////////////////////////
+
+// switching for setting goal
+
+bool stateSwitch = false ;
+bool resetState = false ;
+int resetStateSwitch = 0 ;
+int goalSetInterval = 5000 ;
+int stepGoal = 0 ;
+bool printGoal = false ;
+
+// Timer functionality
+
+bool startTimer = false ;
+bool timing = false ;
+int timer = 0 ;
+int timerCalc ;
+unsigned long timerTracker ;
+bool timerState = false ;
+unsigned long time ;
+
+// state of step
+
+bool rising = false ;
+bool wasRising = false ;
+bool falling = false ;
+float peak = 0 ;
+float valley = 0 ;
+float acceleration = 0 ;
+float prevAcceleration = 0 ;
+int stepCount = 0 ;
+unsigned long stepTime = 0 ;
+bool peakDetected = false ;
+unsigned long startSwing = 0 ;
+
+// motivation function
+int mot = 0 ;
+
+///////////////////////////////////////////////////////////////////////////
+//MALINDU'S WALKING PACE IDENTIFICATION ROUTINE INITIALISATION
+//////////////////////////////////////////////////////////////////////////
+
+enum PaceState {
+  STATIONARY,
+  WALKING,
+  RUNNING
+};
+
+PaceState currentPace = STATIONARY;
+
+unsigned long previousStepTime = 0;
+
+//int walkingStepCount = 0;
+//int runningStepCount = 0;
+
+const unsigned long STATIONARY_TIMEOUT = 2000; // ms
+const float WALK_FREQ_MIN = 0.5;   // steps/sec
+const float RUN_FREQ_MIN = 2.10 ;    // steps/sec
+const float RUN_MAG_MIN = 0.65 ;     // tune experimentally
+
+///////////////////////////////////////////////////////////////////////
+//FINISHED INITIALISATION
+//////////////////////////////////////////////////////////////////////
+
+void setup() {
+  ////////////////////////////////////////////////////////////////////
+  //LIAMS CALIBRATION SETUP
+  ///////////////////////////////////////////////////////////////////
+  Serial.begin(9600);
+
+  analogReference(DEFAULT);
+
+  pinMode(ST_CTRL_PIN, OUTPUT);
+
+  // Your self-test circuit is active-low:
+  // D2 HIGH keeps the actual ADXL335 self-test signal LOW/OFF.
+  digitalWrite(ST_CTRL_PIN, HIGH);
+
+  pinMode(buttonA, INPUT);
+  pinMode(buttonB, INPUT);
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  allLEDsOff();
+
+  lcd.init();
+  lcd.backlight();
+  lcd.createChar(0, upArrow);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("ADXL335 System"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("Starting..."));
+
+  delay(2000);
+}
+
+void loop() {
+  ///////////////////////////////////////////////////////
+  //RORY'S ST ROUTINE STATE 1
+  //////////////////////////////////////////////////////
+  if(stState == true) {
+    stHappening = true ;
+    // ST actually first state
+    lcdShow("ADXL335", "Self-Test Ready");
+    delay(2000);
+    lcd.clear() ;
+    lcd.print("A: start ST") ;
+    lcd.setCursor(0,1) ;
+    lcd.print("B: skip ST") ;
+    while(digitalRead(buttonA) != HIGH) {
+      if (digitalRead(buttonB) == HIGH) {
+        calibrationState = true ;
+        lcd.clear() ;
+        stHappening = false ;
+        stState = false ;
+        break ;
+      }
+    }
+    if (stHappening == true) {
+      stSuccess = selfTest() ;
+    }
+  }
+
+  while(stHappening) {
+    lcd.clear() ;
+    lcd.setCursor(1,0) ;
+    lcd.print("A to switch to") ;
+    lcd.setCursor(0,1) ;
+    lcd.print("calibration") ;
+    if(digitalRead(buttonA) == HIGH) {
+      calibrationState = true ;
+      stState = false ;
+      stHappening = false ;
+    }
+    if(digitalRead(buttonB) == HIGH) {
+      stHappening = false ;
+    }
+  }
+
+  ///////////////////////////////////////////////////////
+  //LIAMS CALIBRATION ROUTINE STATE 2 
+  //////////////////////////////////////////////////////
+  if (calibrationState == true) {
+    calibrationHappening = true ;
+
+    Serial.println(F("ADXL335 LCD Calibration Test"));
+    Serial.println(F("----------------------------"));
+    Serial.println(F("Use external PCB power during calibration."));
+    Serial.println();
+
+    delay(1500);
+
+    if (loadCalibration()) {
+      digitalWrite(GREEN_LED, HIGH);
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(F("Cal data loaded"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("A=recalibrate"));
+
+      Serial.println(F("Stored calibration loaded."));
+      printCalibrationData();
+    } else {
+      digitalWrite(YELLOW_LED, HIGH);
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(F("No calibration"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("Press B start"));
+
+      Serial.println(F("No stored calibration found."));
+      Serial.println(F("Press B to begin calibration."));
+    }
+  }
+
+  while (calibrationHappening) {
+
+    if (buttonPressed(buttonA)) {
+      runCalibration();
+    }
+    
+    //if (cal.magic == CAL_MAGIC) {
+      //displayLiveAcceleration();
+    //}  else {
+     // displayWaitingScreen();
+    //}
+    // press A to switch state
+    if (buttonPressed(buttonB)) {
+      stepCountingState = true ;
+      calibrationState = false ;
+      calibrationHappening = false ;
+      lcd.clear() ;
+      //
+      // Display Still when step counting starts
+      currentPace = STATIONARY;
+      updatePaceLEDs();
+      updatePaceLCD();
+      //
+      break ;
+    }
+
+  }
+
+  ////////////////////////////////////////////////////////////////////
+  //AMY'S STEP COUNTING ROUTINE STATE 4 + MALIS PACE IDENTIFICATION
+  ///////////////////////////////////////////////////////////////////
+  
+  // always monitor is button A is pressed - switches states back to state 1 or timer function
+  while (digitalRead(buttonA) != HIGH && stepCountingState == true) {
+    // normal step counting functionality may run
+    acceleration = getAcceleration() ;
+    rising = acceleration > (prevAcceleration + 0.02) ;
+    falling = acceleration < (prevAcceleration-0.02) ;
+
+
+    if (acceleration < valley) {
+      valley = acceleration ;
+      //lcd.setCursor(0,1) ;
+      //lcd.print(valley) ;
+    }
+
+    if (acceleration > peak) {
+      peak = acceleration ;
+      //lcd.setCursor(5,1) ;
+      //lcd.print(peak) ;
+    }
+
+    if (rising) {
+      if (!wasRising) {
+        // just switched
+        // start of valley
+        //valley = acceleration ;
+        startSwing = millis() ;
+      }
+      wasRising = true ;
+      if (peakDetected) {
+        if (peak - valley < 0.45) {
+          //lcd.clear() ;
+          //lcd.setCursor(1,0) ;
+          //lcd.print("AMP") ;
+        }
+        if (peak - valley > 0.45) {
+          if (millis() - stepTime > 250) {
+            //stepCount += 1 ;
+            //stepTime = millis() ;
+            // walking identification part included
+            unsigned long currentStepTime = millis() ;
+            float stepMagnitude = peak - valley ;
+            stepCount += 1 ;
+            updateWalkingPace(currentStepTime, stepMagnitude) ;
+            stepTime = currentStepTime ;
+            //lcd.clear()
+          }
+        } 
+        peak = acceleration ;
+        valley = acceleration ;
+        peakDetected = false ;
+      }
+    }
+    if (falling) {
+      if (wasRising){
+        if (millis() - startSwing >= 60 && millis() - startSwing <= 450) {
+          peakDetected = true ;
+        }
+      }
+      wasRising = false ;
+    }
+    prevAcceleration = acceleration ;
+
+    // check if pace is stationary
+    checkStationary() ;
+
+    // print step count to lcd
+    lcd.setCursor(0,0) ;
+    lcd.print(stepCount) ;
+
+    if (stepCount == stepGoal && stepGoal != 0) {
+      lcd.setCursor(0,1) ;
+      lcd.print("GOAL REACHED!") ;
+      lcd.print(stepGoal) ;
+    }
+
+    if (stepCount - stepGoal > 20 && stepCount - stepGoal < 22) {
+      lcd.clear() ;
+    }
+
+    // if timer
+    if (startTimer) {
+      timerTracker = millis() ;
+      timing = true ;
+      startTimer = false ;
+    }
+
+    if (timing) {
+      timerCalc = (millis() - timerTracker)/1000 ;
+      if (timerCalc > timer) {
+        timer = timerCalc ;
+        //lcd.clear() ;
+      	lcd.setCursor(0,1) ;
+      	lcd.print("Timer: ") ;
+      	lcd.print(timer) ;
+        lcd.print("      ") ;
+      }
+    }
+
+    // motivation function
+    if (stepCount >= 100 + mot*100 && stepCount < 105 + mot*100) {
+      lcd.clear() ;
+      lcd.setCursor(0,0) ;
+      lcd.print("KEEP GOING!") ;
+      lcd.setCursor(0,1) ;
+      lcd.print("!!!!!!!!!!!!!!!!") ;
+    }
+
+    if (stepCount == 105 + mot*100) {
+      mot += 1 ;
+      lcd.clear() ;
+    }
+    
+
+    // during this step counting state, if button B
+    // is pressed, step count will reset to 0
+    // and user can choose new step goal
+    if (digitalRead(buttonB) == HIGH) {
+      time = millis() ;
+      while(millis() - time < 1000) {
+         // wait 1 second
+      }
+      // enter reset state
+      resetState = true ;
+    }
+    
+    if (resetState) {
+      // reset step count
+      stepCount = 0 ;
+      mot = 0 ;
+      // display on LCD step count reset
+      lcd.clear() ;
+      lcd.setCursor(0,0) ;
+      lcd.print("Step count reset");
+      lcd.setCursor(0,1) ;
+      lcd.print("A: set step goal") ;
+
+      // reset pace identification counts
+      //walkingStepCount = 0;
+      //runningStepCount = 0;
+      previousStepTime = 0;
+      currentPace = STATIONARY;
+      updatePaceLEDs();
+      updatePaceLCD();
+    }
+    
+    while (resetState) {
+      // every time button A is pressed
+      // screen switches
+      // button B breaks function
+      if (digitalRead(buttonB) == HIGH) {
+        lcd.clear() ;
+        lcd.print("Step goal: ");
+        lcd.print(stepGoal) ;
+        // pause for 3 seconds so message gets seen
+        time = millis() ;
+        while(millis() - time < 3000) {
+          // wait 3 seconds
+        }
+        resetStateSwitch = 0 ;
+        resetState = false ;
+        lcd.clear() ;
+        break ;
+      }
+      if (digitalRead(buttonA) == HIGH) {
+        time = millis() ;
+        while(millis() - time < 1000) {
+          // wait 1 second
+        }
+        resetStateSwitch = resetStateSwitch + 1 ;
+        if (resetStateSwitch == 8) {
+          resetStateSwitch = 2 ;
+        }
+        lcd.clear() ;
+        printGoal = true ;
+       	stepGoal = (resetStateSwitch-2)*goalSetInterval ;
+        if (stepGoal == 0) {
+          stepGoal = 10 ;
+        }
+      }
+      // screen state 1
+      if (resetStateSwitch == 1) {
+      	lcd.setCursor(0,0) ; 
+      	lcd.print("A: Next option") ;
+        lcd.setCursor(0,1) ;
+      	lcd.print("B: Select") ;
+      }
+      else {
+        // only print each goal once
+        if (printGoal) {
+          lcd.clear() ;
+          lcd.setCursor(0,0) ;
+     	  lcd.print(stepGoal) ;
+          printGoal = false ;
+        }  	
+      }
+    }
+  }
+  // if button A is pressed
+  // either can select to start timing
+  // or switch states back to state 1
+  if (digitalRead(buttonA) == HIGH) {
+    if (!timing) {
+      time = millis() ;
+      while(millis() - time < 1000) {
+         // wait 1 second
+      }
+  		// state switch
+  		lcd.clear() ; 
+  		lcd.setCursor(0,0) ;
+  		lcd.print("A: Start timer  ") ;
+  		lcd.setCursor(0,1) ;
+  		lcd.print("B: Hiking stats") ;
+      	while (!timerState) {
+      		if (digitalRead(buttonA) == HIGH) {
+    			lcd.clear() ;
+    			lcd.setCursor(0,0) ;
+    			lcd.print("Starting timer") ;
+    			startTimer = true ;
+          time = millis() ;
+    			while(millis() - time < 500) {
+    				// wait 0.5 second
+    			}
+            lcd.clear() ;
+            break ;
+  			}
+  			if (digitalRead(buttonB) == HIGH) {
+    			lcd.clear() ;
+    			lcd.setCursor(0,0) ;
+    			lcd.print("Switching states") ;
+    			//stState = true ;
+          hikingState = true ;
+          break ;
+  			}
+      }
+    } else {
+    	lcd.clear() ;
+    	lcd.setCursor(0,0) ;
+    	lcd.print("Total time: ") ;
+    	lcd.setCursor(0,1) ;
+    	lcd.print(timer) ;
+    	timer = 0 ;
+    	timing = false ;
+    	time = millis() ;
+    	while(millis() - time < 1000) {
+    	// wait 1 second
+    	}
+      lcd.clear() ;
+    }
+  } 
+
+  if (hikingState) {
+    while(millis() - time < 1000) {
+    	// wait 1 second
+    }
+    lcd.clear() ;
+    float km = stepCount / 1300.0f ;
+    while(digitalRead(buttonA) != HIGH) {
+      // consider average 1300 steps in a kilometre
+      lcd.setCursor(0,0) ;
+      lcd.print("HIKING STATS:") ;
+      lcd.setCursor(0,1) ;
+      lcd.print(km) ;
+      lcd.print(" km total") ;
+    }
+    stState = true ;
+    hikingState = false ;
+  }
+
+}
+
+//////////////////////////////////////////////////////////////////////
+//AMY'S STEP COUNTING FUNCTIONS
+/////////////////////////////////////////////////////////////////////
+float getAcceleration() {
+  // first, we need to read the values from the accelerometer, and calculation the Euclidean Norm Minus One
+  float sumX = 0 ;
+  float sumY = 0 ;
+  float sumZ = 0 ;
+  float valueX = 0 ;
+  float valueY = 0 ;
+  float valueZ = 0 ;
+  int samples = 5 ;
+
+  for (int i = 0 ; i < 5 ; i++){
+    sumX += (analogRead(X_PIN) - cal.offset[0]) / cal.scale[0] ;
+    sumY += (analogRead(Y_PIN) - cal.offset[1]) / cal.scale[1] ;
+    sumZ += (analogRead(Z_PIN) - cal. offset[2]) / cal.scale[2] ;
+  }
+
+  valueX = sumX/samples ;
+  valueY = sumY/samples ;
+  valueZ = sumZ/samples ;
+
+  float magnitude = sqrt(valueX * valueX + valueY*valueY + valueZ*valueZ)  ;
+
+
+  return magnitude ;
+}
+
+//////////////////////////////////////////////////////////////////////
+//MALINDU'S WALKING PACE IDENTIFICATION FUNCTIONS
+/////////////////////////////////////////////////////////////////////
+
+void updateWalkingPace(unsigned long currentStepTime, float stepMagnitude) {
+  float stepFrequency = 0.0;
+
+  if (previousStepTime == 0) {
+    if (stepMagnitude >= RUN_MAG_MIN) {
+      currentPace = RUNNING;
+      //runningStepCount++;
+    }
+    else {
+      currentPace = WALKING;
+      //walkingStepCount++;
+    }
+  
+    previousStepTime = currentStepTime;
+    updatePaceLEDs();
+    updatePaceLCD();
+    return;
+  }
+
+  if (previousStepTime > 0) {
+    float stepInterval = (currentStepTime - previousStepTime) / 1000.0;
+    stepFrequency = 1.0 / stepInterval;
+  }
+
+  if (stepFrequency >= RUN_FREQ_MIN && stepMagnitude >= RUN_MAG_MIN) {
+    currentPace = RUNNING;
+    //runningStepCount++;
+  }
+  else if (stepFrequency >= WALK_FREQ_MIN) {
+    currentPace = WALKING;
+    //walkingStepCount++;
+  }
+
+  previousStepTime = currentStepTime;
+
+  updatePaceLEDs();
+  updatePaceLCD();
+}
+
+void checkStationary() {
+  if (millis() - stepTime > STATIONARY_TIMEOUT && currentPace != STATIONARY && resetState != true) {
+    currentPace = STATIONARY;
+    updatePaceLEDs();
+    updatePaceLCD();
+  }
+}
+
+void updatePaceLEDs() {
+  digitalWrite(RED_LED, currentPace == STATIONARY);
+  digitalWrite(YELLOW_LED, currentPace == WALKING);
+  digitalWrite(GREEN_LED, currentPace == RUNNING);
+}
+
+void updatePaceLCD() {
+  //lcd.setCursor(0, 0);
+  // clear only top right side of row
+  lcd.setCursor(11,0) ;
+  lcd.print("     ") ;
+
+  lcd.setCursor(11,0) ;
+
+  if (resetState != true) {
+
+    if (currentPace == STATIONARY) {
+      lcd.print("Still");
+    }
+    else if (currentPace == WALKING) {
+      lcd.print("Walk ");
+    }
+    else if (currentPace == RUNNING) {
+    lcd.print("Run  ") ;
+    }
+  } else if (resetState == true) {
+    lcd.print("reset") ;
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//RORY'S ST FULL SCRIPT IN FUNCTION
+////////////////////////////////////////////////////////////////////////////
+bool selfTest() {
+  // returns bool indicating if passed or fails
+  // called when state 1 flag is active
+
+  bool success ;
+
+  digitalWrite(YELLOW_LED, HIGH);
+
+  // ── Baseline ──
+  lcdShow("Reading", "Baseline");
+
+  int xb = readADC(X_PIN);
+  int yb = readADC(Y_PIN);
+  int zb = readADC(Z_PIN);
+
+  lcdShow("BASE ADC", "X Y Z");
+  delay(3000);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("X:"); lcd.print(xb);
+  lcd.print(" Y:"); lcd.print(yb);
+  lcd.setCursor(0,1);
+  lcd.print("Z:"); lcd.print(zb);
+  delay(3000);
+
+  // ── Saturation check ──
+  bool saturated = (xb > 980 || yb > 980 || zb > 980);
+
+  // ── Self-test ON ──
+  digitalWrite(ST_CTRL_PIN, LOW);
+  lcdShow("SELF TEST", "Running...");
+  delay(500);
+
+  int xs = readADC(X_PIN);
+  int ys = readADC(Y_PIN);
+  int zs = readADC(Z_PIN);
+
+  // ── Deltas ──
+  int xd = xs - xb;
+  int yd = ys - yb;
+  int zd = zs - zb;
+
+  int headroomX = 1023 - xb;
+  int headroomY = 1023 - yb;
+  int headroomZ = 1023 - zb;
+
+  if (headroomX < 50) headroomX = 50;
+  if (headroomY < 50) headroomY = 50;
+  if (headroomZ < 50) headroomZ = 50;
+
+  float nx = (float)xd / headroomX;
+  float ny = (float)yd / headroomY;
+  float nz = (float)zd / headroomZ;
+
+  lcdShow("DELTA X Y", "Z");
+  delay(4000);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("X:"); lcd.print(xd);
+  lcd.print(" Y:"); lcd.print(yd);
+  lcd.setCursor(0,1);
+  lcd.print("Z:"); lcd.print(zd);
+  delay(1500);
+
+  // ── Axis validation ──
+  bool xp = abs(nx) > 0.05;
+  bool yp = abs(ny) > 0.05;
+  bool zp = abs(nz) > 0.05;
+
+  delay(2000);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Axis X "); lcd.print(xp ? "PASS" : "FAIL");
+  lcd.setCursor(0,1);
+  lcd.print("d="); lcd.print(xd); 
+  delay(1500);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Axis Y "); lcd.print(yp ? "PASS" : "FAIL");
+  lcd.setCursor(0,1);
+  lcd.print("d="); lcd.print(yd); 
+  delay(1500);
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Axis Z "); lcd.print(zp ? "PASS" : "FAIL");
+  lcd.setCursor(0,1);
+  lcd.print("d="); lcd.print(zd); 
+  delay(1500);
+
+  // FINAL LED + OVERALL RESULT
+  digitalWrite(YELLOW_LED, LOW);
+
+  if (xp && yp && zp) {
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+    lcdShow("SELF TEST", "PASS");
+    success = true ;
+  } else {
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+    lcdShow("SELF TEST", "FAIL");
+    success = false ;
+  }
+
+  delay(4000);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+
+  digitalWrite(ST_CTRL_PIN, HIGH);
+
+  return success ;
+
+
+
+
+
+
+
+
+
+
+  /*
+  bool success ;
+  // ── Step 1 — Read baseline (ST OFF) ──────────────────────
+  digitalWrite(ST_CTRL_PIN, HIGH);   // self-test OFF
+  digitalWrite(YELLOW_LED, HIGH);
+
+  lcdShow("Reading", "Baseline...");
+  delay(200);
+
+  float xb = readMV(X_PIN);
+  float yb = readMV(Y_PIN);
+  float zb = readMV(Z_PIN);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Z Raw:");
+  lcd.setCursor(0, 1);
+  lcd.print(analogRead(Z_PIN));
+  delay(2000) ;
+
+  // Show baseline on LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("Base X="));
+  lcd.print(xb, 0);
+  lcd.print(F("mV"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("Y="));
+  lcd.print(yb, 0);
+  lcd.print(F(" Z="));
+  lcd.print(zb, 0);
+  delay(2000);
+
+  // ── Step 2 — Apply self-test (ST ON) ─────────────────────
+  digitalWrite(ST_CTRL_PIN, LOW);    // self-test ON (active-low)
+
+  lcdShow("Applying", "Self-Test...");
+  delay(200);
+
+  float xs = readMV(X_PIN);
+  float ys = readMV(Y_PIN);
+  float zs = readMV(Z_PIN);
+
+  // Show self-test readings on LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("ST   X="));
+  lcd.print(xs, 0);
+  lcd.print(F("mV"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("Y="));
+  lcd.print(ys, 0);
+  lcd.print(F(" Z="));
+  lcd.print(zs, 0);
+  delay(2000);
+
+  // ── Step 3 — Calculate deltas ─────────────────────────────
+  float xd = xs - xb;
+  float yd = ys - yb;
+  float zd = zs - zb;
+
+
+
+  // Show deltas on LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("Deltas (mV)"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("X="));
+  lcd.print(xd, 0);
+  lcd.print(F(" Y="));
+  lcd.print(yd, 0);
+  lcd.print(F(" Z="));
+  lcd.print(zd, 0);
+  delay(2000);
+
+  // ── Step 4 — Validate each axis ──────────────────────────
+  lcdShow("Validating", "Axes...");
+  delay(1000);
+
+  bool xp = checkAndDisplay(xd, X_EXPECTED, "X");
+  bool yp = checkAndDisplay(yd, Y_EXPECTED, "Y");
+  bool zp = checkAndDisplay(zd, Z_EXPECTED, "Z");
+
+  // ── Step 5 — Overall result ───────────────────────────────
+  digitalWrite(YELLOW_LED, LOW);
+  digitalWrite(ST_CTRL_PIN, HIGH);   // self-test OFF
+
+  if (xp && yp && zp) {
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED,   LOW);
+
+    lcdShow("SELF-TEST", "PASS :)");
+    success = true ;
+
+  } else {
+    digitalWrite(RED_LED,   HIGH);
+    digitalWrite(GREEN_LED, LOW);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("SELF-TEST FAIL"));
+    lcd.setCursor(0, 1);
+
+    // Show which axes failed
+    if (!xp) lcd.print(F("X "));
+    if (!yp) lcd.print(F("Y "));
+    if (!zp) lcd.print(F("Z "));
+    lcd.print(F("failed"));
+    success = false ;
+  }
+
+  // Hold result on screen for 5 seconds then repeat
+  delay(5000);
+
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED,   LOW);
+
+  
+  
+  return success ; */
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+//LIAMS CALIBRATION FUNCTIONS
+/////////////////////////////////////////////////////////////////////////////
+
+void runCalibration() {
+  digitalWrite(ST_CTRL_PIN, HIGH);   // Self-test OFF
+
+  // Save the currently active successful calibration before attempting a new one.
+  CalibrationData previousCal = cal;
+  bool hadPreviousCalibration = (cal.magic == CAL_MAGIC);
+
+  allLEDsOff();
+  digitalWrite(YELLOW_LED, HIGH);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("Calibration"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("Starting..."));
+
+  Serial.println();
+  Serial.println(F("Starting calibration..."));
+  Serial.println(F("Keep the box still for each reading."));
+  Serial.println();
+
+  delay(1500);
+
+  float plusRaw[3]  = {0.0, 0.0, 0.0};
+  float minusRaw[3] = {0.0, 0.0, 0.0};
+
+  const byte targetAxis[6] = {
+    0, 0,   // +X, -X
+    1, 1,   // +Y, -Y
+    2, 2    // +Z, -Z
+  };
+
+  const bool positiveReading[6] = {
+    true, false,
+    true, false,
+    true, false
+  };
+
+  bool readingClipped = false;
+
+  for (byte position = 0; position < 6; position++) {
+    displayOrientationPrompt(position);
+    printSerialOrientationPrompt(position);
+
+    waitForButton(buttonA);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Hold still..."));
+    lcd.setCursor(0, 1);
+    lcd.print(F("Measuring"));
+
+    Serial.println(F("Hold still..."));
+
+    delay(SETTLE_TIME_MS);
+
+    float raw[3];
+    readXYZAverage(raw, CAL_SAMPLES);
+
+    byte axis = targetAxis[position];
+
+    if (positiveReading[position]) {
+      plusRaw[axis] = raw[axis];
+    } else {
+      minusRaw[axis] = raw[axis];
+    }
+
+    if (nearADCRail(raw[axis])) {
+      readingClipped = true;
+    }
+
+    Serial.print(F("Saved "));
+    printOrientationNameSerial(position);
+    Serial.println();
+    printRawVoltages(raw);
+    Serial.println();
+
+    displaySavedReading(position, axis, raw[axis]);
+
+    delay(1500);
+  }
+
+  // Store the new calculations in a temporary structure.
+  // The active calibration is not changed unless this attempt passes.
+  CalibrationData newCal;
+  newCal.magic = CAL_MAGIC;
+
+  bool calibrationOK = !readingClipped;
+
+  for (byte axis = 0; axis < 3; axis++) {
+    newCal.offset[axis] = (plusRaw[axis] + minusRaw[axis]) / 2.0;
+    newCal.scale[axis]  = (plusRaw[axis] - minusRaw[axis]) / 2.0;
+
+    // Reject if the +1g and -1g readings were too similar.
+    if (fabs(newCal.scale[axis]) < 20.0) {
+      calibrationOK = false;
+    }
+
+    // Reject if either end of an axis clipped near the ADC rails.
+    if (nearADCRail(plusRaw[axis]) ||
+        nearADCRail(minusRaw[axis])) {
+      calibrationOK = false;
+    }
+  }
+
+  if (calibrationOK) {
+    // Only now replace the active and stored calibration.
+    cal = newCal;
+    EEPROM.put(EEPROM_ADDR, cal);
+
+    allLEDsOff();
+    digitalWrite(GREEN_LED, HIGH);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Calibration"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("SUCCESS"));
+
+    Serial.println(F("Calibration successful."));
+    Serial.println(F("New calibration has been saved."));
+    printCalibrationData();
+
+    delay(3000);
+  } else {
+    allLEDsOff();
+    digitalWrite(RED_LED, HIGH);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Cal attempt FAIL"));
+
+    Serial.println(F("Calibration failed."));
+    Serial.println(F("Check for:"));
+    Serial.println(F("- Incorrect orientation"));
+    Serial.println(F("- Movement during reading"));
+    Serial.println(F("- ADC clipping near 0 or 1023"));
+    Serial.println(F("- Signal/filter hardware fault"));
+
+    delay(2000);
+
+    if (hadPreviousCalibration) {
+      // Restore the previously successful active calibration.
+      // EEPROM was never overwritten, so the saved calibration is also unchanged.
+      cal = previousCal;
+
+      allLEDsOff();
+      digitalWrite(GREEN_LED, HIGH);
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(F("Using saved cal"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("A=try again"));
+
+      Serial.println();
+      Serial.println(F("Previous successful calibration restored."));
+      Serial.println(F("Failed readings were not saved."));
+      printCalibrationData();
+
+      delay(3000);
+    } else {
+      // No successful calibration has ever been completed.
+      cal.magic = 0;
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(F("No valid cal"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("A=try again"));
+
+      Serial.println();
+      Serial.println(F("No previous successful calibration available."));
+
+      delay(3000);
+    }
+  }
+}
+
+// =====================================================
+// LCD orientation instructions
+// =====================================================
+
+void displayOrientationPrompt(byte position) {
+  lcd.clear();
+
+  switch (position) {
+    case 0:
+      // +X: LCD side faces upward
+      lcd.setCursor(0, 0);
+      lcd.print(F("+X LCD SIDE"));
+      lcd.setCursor(0, 1);
+      lcd.write(byte(0));
+      lcd.print(F(" UP  Press A"));
+      break;
+
+    case 1:
+      // -X: BNC connector faces upward
+      lcd.setCursor(0, 0);
+      lcd.print(F("-X BNC SIDE"));
+      lcd.setCursor(0, 1);
+      lcd.write(byte(0));
+      lcd.print(F(" UP  Press A"));
+      break;
+
+    case 2:
+      // +Y: User-interface LEDs face upward
+      lcd.setCursor(0, 0);
+      lcd.print(F("+Y UI LED SIDE"));
+      lcd.setCursor(0, 1);
+      lcd.write(byte(0));
+      lcd.print(F(" UP  Press A"));
+      break;
+
+    case 3:
+      // -Y: Barrel jack faces upward
+      lcd.setCursor(0, 0);
+      lcd.print(F("-Y BARREL JACK"));
+      lcd.setCursor(0, 1);
+      lcd.write(byte(0));
+      lcd.print(F(" UP  Press A"));
+      break;
+
+    case 4:
+      // +Z: LCD visible and text correctly oriented
+      lcd.setCursor(0, 0);
+      lcd.print(F("+Z LCD TEXT"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("RIGHT WAY  A"));
+      break;
+
+    case 5:
+      // -Z: LCD visible but text upside down
+      lcd.setCursor(0, 0);
+      lcd.print(F("-Z LCD TEXT"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("UPSIDE DOWN A"));
+      break;
+  }
+}
+
+void printSerialOrientationPrompt(byte position) {
+  Serial.print(F("Place box in position: "));
+
+  switch (position) {
+    case 0:
+      Serial.println(F("+X: LCD side facing upwards."));
+      break;
+
+    case 1:
+      Serial.println(F("-X: BNC connector facing upwards."));
+      break;
+
+    case 2:
+      Serial.println(F("+Y: User-interface LEDs facing upwards."));
+      break;
+
+    case 3:
+      Serial.println(F("-Y: Barrel jack facing upwards."));
+      break;
+
+    case 4:
+      Serial.println(F("+Z: LCD visible with text the right way around."));
+      break;
+
+    case 5:
+      Serial.println(F("-Z: LCD visible with text upside down."));
+      break;
+  }
+
+  Serial.println(F("Then press B to record."));
+}
+
+void printOrientationNameSerial(byte position) {
+  switch (position) {
+    case 0:
+      Serial.print(F("+X axis UP"));
+      break;
+    case 1:
+      Serial.print(F("-X axis UP"));
+      break;
+    case 2:
+      Serial.print(F("+Y axis UP"));
+      break;
+    case 3:
+      Serial.print(F("-Y axis UP"));
+      break;
+    case 4:
+      Serial.print(F("+Z axis UP"));
+      break;
+    case 5:
+      Serial.print(F("-Z axis UP"));
+      break;
+  }
+}
+
+void displaySavedReading(byte position, byte axis, float rawValue) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("Saved "));
+
+  switch (position) {
+    case 0:
+      lcd.print(F("+X"));
+      break;
+    case 1:
+      lcd.print(F("-X"));
+      break;
+    case 2:
+      lcd.print(F("+Y"));
+      break;
+    case 3:
+      lcd.print(F("-Y"));
+      break;
+    case 4:
+      lcd.print(F("+Z"));
+      break;
+    case 5:
+      lcd.print(F("-Z"));
+      break;
+  }
+
+  lcd.setCursor(0, 1);
+
+  if (axis == 0) {
+    lcd.print(F("X:"));
+  } else if (axis == 1) {
+    lcd.print(F("Y:"));
+  } else {
+    lcd.print(F("Z:"));
+  }
+
+  lcd.print(rawValue, 0);
+  lcd.print(F(" "));
+  lcd.print(adcToVoltage(rawValue), 2);
+  lcd.print(F("V"));
+}
+
+// =====================================================
+// Live calibrated display
+// =====================================================
+
+void displayLiveAcceleration() {
+  float raw[3];
+  float g[3];
+
+  readXYZAverage(raw, LIVE_SAMPLES);
+
+  for (byte axis = 0; axis < 3; axis++) {
+    g[axis] = (raw[axis] - cal.offset[axis]) / cal.scale[axis];
+  }
+
+  float magnitude = sqrt(
+    g[0] * g[0] +
+    g[1] * g[1] +
+    g[2] * g[2]
+  );
+
+  clearLCDRow(0);
+  lcd.setCursor(0, 0);
+  lcd.print(F("X:"));
+  printSignedLCD(g[0]);
+  lcd.print(F(" Y:"));
+  printSignedLCD(g[1]);
+
+  clearLCDRow(1);
+  lcd.setCursor(0, 1);
+  lcd.print(F("Z:"));
+  printSignedLCD(g[2]);
+  lcd.print(F(" M:"));
+  lcd.print(magnitude, 2);
+
+  Serial.print(F("X = "));
+  Serial.print(g[0], 2);
+  Serial.print(F(" g, Y = "));
+  Serial.print(g[1], 2);
+  Serial.print(F(" g, Z = "));
+  Serial.print(g[2], 2);
+  Serial.print(F(" g, Magnitude = "));
+  Serial.print(magnitude, 2);
+  Serial.println(F(" g"));
+}
+
+void displayWaitingScreen() {
+  clearLCDRow(0);
+  lcd.setCursor(0, 0);
+  lcd.print(F("No calibration"));
+
+  clearLCDRow(1);
+  lcd.setCursor(0, 1);
+  lcd.print(F("Press A start"));
+}
+
+// =====================================================
+// ADC reading functions
+// =====================================================
+
+void readXYZAverage(float raw[3], int numberOfSamples) {
+  long sumX = 0;
+  long sumY = 0;
+  long sumZ = 0;
+
+  for (int sample = 0; sample < numberOfSamples; sample++) {
+    analogRead(X_PIN);
+    delayMicroseconds(200);
+    sumX += analogRead(X_PIN);
+
+    analogRead(Y_PIN);
+    delayMicroseconds(200);
+    sumY += analogRead(Y_PIN);
+
+    analogRead(Z_PIN);
+    delayMicroseconds(200);
+    sumZ += analogRead(Z_PIN);
+
+    delay(3);
+  }
+
+  raw[0] = sumX / float(numberOfSamples);
+  raw[1] = sumY / float(numberOfSamples);
+  raw[2] = sumZ / float(numberOfSamples);
+}
+
+float adcToVoltage(float adcValue) {
+  return adcValue * ADC_REF_VOLTAGE / 1023.0;
+}
+
+bool nearADCRail(float value) {
+  return value < ADC_LOW_LIMIT || value > ADC_HIGH_LIMIT;
+}
+
+// =====================================================
+// EEPROM functions
+// =====================================================
+
+bool loadCalibration() {
+  EEPROM.get(EEPROM_ADDR, cal);
+
+  if (cal.magic != CAL_MAGIC) {
+    return false;
+  }
+
+  for (byte axis = 0; axis < 3; axis++) {
+    if (fabs(cal.scale[axis]) < 20.0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// =====================================================
+// Button functions
+// =====================================================
+
+bool buttonPressed(byte pin) {
+  if (digitalRead(pin) == HIGH) {
+    delay(30);
+
+    if (digitalRead(pin) == HIGH) {
+      while (digitalRead(pin) == HIGH) {
+        delay(5);
+      }
+
+      delay(30);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void waitForButton(byte pin) {
+  while (digitalRead(pin) == LOW) {
+    delay(5);
+  }
+
+  delay(30);
+
+  while (digitalRead(pin) == HIGH) {
+    delay(5);
+  }
+
+  delay(30);
+}
+
+// =====================================================
+// Display and serial helper functions
+// =====================================================
+
+void clearLCDRow(byte row) {
+  lcd.setCursor(0, row);
+  lcd.print(F("                "));
+}
+
+void printSignedLCD(float value) {
+  if (value >= 0) {
+    lcd.print(F("+"));
+  }
+
+  lcd.print(value, 2);
+}
+
+void printRawVoltages(float raw[3]) {
+  Serial.print(F("Raw X = "));
+  Serial.print(raw[0], 2);
+  Serial.print(F("  Voltage = "));
+  Serial.print(adcToVoltage(raw[0]), 3);
+  Serial.print(F(" V, Raw Y = "));
+  Serial.print(raw[1], 2);
+  Serial.print(F("  Voltage = "));
+  Serial.print(adcToVoltage(raw[1]), 3);
+  Serial.print(F(" V, Raw Z = "));
+  Serial.print(raw[2], 2);
+  Serial.print(F("  Voltage = "));
+  Serial.print(adcToVoltage(raw[2]), 3);
+  Serial.println(F(" V"));
+}
+
+void printCalibrationData() {
+  Serial.println();
+  Serial.println(F("Calibration data:"));
+
+  Serial.print(F("X offset = "));
+  Serial.print(cal.offset[0], 2);
+  Serial.print(F(", X scale = "));
+  Serial.println(cal.scale[0], 2);
+
+  Serial.print(F("Y offset = "));
+  Serial.print(cal.offset[1], 2);
+  Serial.print(F(", Y scale = "));
+  Serial.println(cal.scale[1], 2);
+
+  Serial.print(F("Z offset = "));
+  Serial.print(cal.offset[2], 2);
+  Serial.print(F(", Z scale = "));
+  Serial.println(cal.scale[2], 2);
+
+  Serial.println();
+}
+
+void allLEDsOff() {
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(YELLOW_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+}
+
+
